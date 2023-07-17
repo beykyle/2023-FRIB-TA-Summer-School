@@ -412,9 +412,8 @@ class LagrangeRMatrix:
         C = np.zeros((sz, sz), dtype=complex)
         for i in range(self.system.num_channels):
             for j in range(self.system.num_channels):
-                C[i : i + self.N, j : j + self.N] = self.single_channel_bloch_se_matrix(
-                    i, j
-                )
+                C[i*self.N : i*self.N + self.N,
+                  j*self.N : j*self.N + self.N] = self.single_channel_bloch_se_matrix(i, j)
         return C
 
     def single_channel_bloch_se_matrix(self, i=None, j=None):
@@ -473,13 +472,17 @@ class LagrangeRMatrix:
             # Eq. 15 in [Descouvemont, 2016]
             for i in range(self.system.num_channels):
                 for j in range(self.system.num_channels):
-                    submatrix = block(R, (i,j), (self.N, self.N))
+                    a = self.se[i,i].a
+                    submatrix = block(Ainv, (i,j), (self.N, self.N))
                     b1 = b[i*self.N:i*self.N+self.N]
                     b2 = b[j*self.N:j*self.N+self.N]
                     R[i, j] = np.dot(b1, np.dot(submatrix, b2)) / (a * a)
 
             # calculate collision matrix (S-matrix)
             # Eqns. 16 and 17 in [Descouvemont, 2016]
+            a = self.se[0,0].a
+            l = self.se[0,0].l
+            eta = self.se[0,0].eta
             Z_minus = H_minus(a, l, eta) - a * R * H_minus_prime(a, l, eta)
             Z_plus = H_plus(a, l, eta) - a * R * H_plus_prime(a, l, eta)
             S = solve(Z_plus, Z_minus)
@@ -605,10 +608,12 @@ def coupled_channels_example():
     a = 0.5  # Woods-Saxon potential diffuseness
     params = (V, W, R, a)
 
+    nodes_within_radius = 5
+
     system = ProjectileTargetSystem(
         incident_energy=50,
         reduced_mass=939,
-        channel_radius=30,
+        channel_radius=5*(2*np.pi),
         num_channels=3,
         level_energies=[0, 12, 20],
     )
@@ -618,12 +623,12 @@ def coupled_channels_example():
     matrix = np.empty((3, 3), dtype=object)
 
     # diagonal potentials are just Woods-Saxons
-    for i in range(sys.num_channels):
+    for i in range(system.num_channels):
         matrix[i, i] = RadialSEChannel(
             l=l,
             system=system,
             interaction=lambda r: woods_saxon_potential(r, params),
-            threshold_energy=sys.level_energies[i],
+            threshold_energy=system.level_energies[i],
         )
 
     # transition potentials have depths damped by a factor compared to diagonal terms
@@ -633,8 +638,8 @@ def coupled_channels_example():
     Wt = W / transition_dampening_factor
 
     # off diagonal potential terms
-    for i in range(sys.num_channels):
-        for j in range(sys.num_channels):
+    for i in range(system.num_channels):
+        for j in range(system.num_channels):
             if i != j:
                 matrix[i, j] = RadialSEChannel(
                     l=l,
@@ -642,7 +647,7 @@ def coupled_channels_example():
                     interaction=lambda r: surface_peaked_gaussian_potential(
                         r, (Vt, Wt, R, a)
                     ),
-                    threshold_energy=sys.level_energies[i],
+                    threshold_energy=system.level_energies[i],
                 )
 
     solver_lm = LagrangeRMatrix(30, system, matrix)
@@ -858,7 +863,7 @@ def rmse_RK_LM():
 
 if __name__ == "__main__":
     #channel_radius_dependence_test()
-    local_interaction_example()
+    #local_interaction_example()
     #nonlocal_interaction_example()
-    #coupled_channels_example()
+    coupled_channels_example()
     #rmse_RK_LM()

@@ -11,6 +11,9 @@ from scipy.linalg import solve, ishermitian
 alpha = 1.0 / 137.0359991  # dimensionless fine structure constant
 hbarc = 197.3  # MeV fm
 
+def complex_det(matrix : np.array):
+    d = np.linalg.det(matrix @ np.conj(matrix).T)
+    return np.sqrt(d)
 
 def block(matrix: np.array, block, block_size):
     """
@@ -422,7 +425,6 @@ class LagrangeRMatrix:
         C = np.zeros((sz, sz), dtype=complex)
         for i in range(self.system.num_channels):
             for j in range(self.system.num_channels):
-                print(self.se[i, j].Vscaled(self.abscissa[0] * self.se[0, 0].a))
                 C[
                     i * self.N : i * self.N + self.N, j * self.N : j * self.N + self.N
                 ] = self.single_channel_bloch_se_matrix(i, j)
@@ -504,15 +506,11 @@ class LagrangeRMatrix:
 
             # calculate collision matrix (S-matrix)
             # Eqns. 16 and 17 in [Descouvemont, 2016]
-            # TODO this k_factor might need to be transposed
-            Hm = np.fill_diagonal(
-                np.zeros(self.system.num_channels, self.system.num_channels),
-                H_minus(a, l, eta),
+            Hm = np.diag(
+                np.ones(self.system.num_channels) *  H_minus(a, l, eta),
             )
-
-            Hp = np.fill_diagonal(
-                np.zeros(self.system.num_channels, self.system.num_channels),
-                H_plus(a, l, eta),
+            Hp = np.diag(
+                np.ones(self.system.num_channels) *  H_plus(a, l, eta),
             )
 
             Z_minus = Hm - a * R * H_minus_prime(a, l, eta)
@@ -545,7 +543,7 @@ class LagrangeRMatrix:
 
     def wavefunction_full(self, r, uint, uext, i=0):
         return np.where(
-            r < self.system.channel_radius / self.se[i, j].k, uint(r), uext(r)
+            r < self.system.channel_radius / self.se[i, i].k, uint(r), uext(r)
         )
 
     def solve_wavefunction(self, where="internal"):
@@ -556,11 +554,14 @@ class LagrangeRMatrix:
         """
         R, S, G = self.solve()
 
+        if not self.coupled_channels:
+            S = np.array([[S]])
+
         b = np.concatenate(
             [
                 np.array(
                     [
-                        (self.f(n, a) * self.uext_prime_boundary(j))
+                        (self.f(n, self.se[j,j].a) * self.uext_prime_boundary(S, j))
                         for n in range(1, self.N + 1)
                     ]
                 )
@@ -590,13 +591,14 @@ class LagrangeRMatrix:
             uint = uint[0]
             uext = uext[0]
             u = u[0]
+            S = S[0,0]
 
         if where == "external":
-            return uext
+            return R, S, uext
         elif where == "internal":
-            return uint
+            return R, S, uint
         else:
-            return u
+            return R, S, u
 
 
 def yamaguchi_potential(r, rp, params):
@@ -727,13 +729,14 @@ def coupled_channels_example(visualize=False):
                 plt.title(f"({i}, {j})")
                 plt.show()
 
-    R, S, uch = solver_lm.solve_wavefunction()
+    # get R and S-matrix, and both internal and external soln
+    R, S, uch = solver_lm.solve_wavefunction("everywhere")
 
     # S must be unitary
-    assert np.isclose(np.linalg.det(S), 1.0)
+    assert np.isclose( complex_det(S), 1.0)
     assert np.allclose(S, S.T)
 
-    r_values = np.linspace(0.05, channel_radius, 500)
+    r_values = np.linspace(0.05, system.channel_radius/matrix[0,0].k, 500)
 
     for i, u in enumerate(uch):
         u = u(r_values)
@@ -954,7 +957,7 @@ def rmse_RK_LM():
 
 if __name__ == "__main__":
     # channel_radius_dependence_test()
-    local_interaction_example()
+    #local_interaction_example()
     # nonlocal_interaction_example()
     coupled_channels_example()
     # rmse_RK_LM()

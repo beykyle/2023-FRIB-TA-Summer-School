@@ -454,8 +454,8 @@ class LagrangeRMatrix:
 
     def solve(self):
         """
-        Returns the R-Matrix, the S-matrix, and the wavefunction coefficients in
-        the Lagrange-Legendre basis
+        Returns the R-Matrix and the S-matrix, as well as the Green's function in Lagrange-Legendre
+        coordinates
 
         For the coupled-channels case this follows:
         Descouvemont, P. (2016).
@@ -471,103 +471,132 @@ class LagrangeRMatrix:
         if not self.coupled_channels:
             # Eq. 6.11 in [Baye, 2015]
             b = np.array([self.f(n, a) for n in range(1, self.N + 1)])
-            x = solve(A, b)
+            G = np.linalg.inv(A)
+            x = np.dot(G, b)
             R = np.dot(x, b) / (a * a)
             S = smatrix(R, a, l, eta)
-            return R, S, x
+            return R, S, G
         else:
             # TODO formulate all of this as solving a linear system
             # rather than an inversion
-            ach = [self.system.channel_radius * se.k for se in np.diag(self.se)]
+            ach = [se.a for se in np.diag(self.se)]
 
             # source term - basis functions evaluated at each channel radius
             b = np.concatenate(
                 [np.array([self.f(n, a) for n in range(1, self.N + 1)]) for a in ach]
             )
-            Ainv = np.linalg.inv(A)
-            x = np.split(np.dot(Ainv, b), self.system.num_channels)
-            R = np.zeros(
-                (self.system.num_channels, self.system.num_channels), dtype=complex
-            )
+
+            # find Green's function explicitly in Lagrange-Legendre coords
+            G = np.linalg.inv(A)
 
             # calculate R-matrix
             # Eq. 15 in [Descouvemont, 2016]
+            R = np.zeros(
+                (self.system.num_channels, self.system.num_channels), dtype=complex
+            )
             for i in range(self.system.num_channels):
                 for j in range(self.system.num_channels):
                     a = self.se[i, i].a
-                    submatrix = block(Ainv, (i, j), (self.N, self.N))
+                    submatrix = block(G, (i, j), (self.N, self.N))
                     b1 = b[i * self.N : i * self.N + self.N]
                     b2 = b[j * self.N : j * self.N + self.N]
                     R[i, j] = np.dot(b1, np.dot(submatrix, b2)) / (a * a)
 
             # calculate collision matrix (S-matrix)
             # Eqns. 16 and 17 in [Descouvemont, 2016]
-            #TODO this k_factor might need to be transposed
-            k_factor = np.repeat(
-                np.array([np.sqrt(1.0 / se.k) for se in np.diag(self.se)]),
-                self.num_channels,
-            ).reshape(self.num_channels, self.num_channels)
+            # TODO this k_factor might need to be transposed
+            Hm = np.fill_diagonal(
+                np.zeros(self.system.num_channels, self.system.num_channels),
+                H_minus(a, l, eta),
+            )
 
-            Z_minus = np.multiply(
-                k_factor, H_minus(a, l, eta) - a * R * H_minus_prime(a, l, eta)
+            Hp = np.fill_diagonal(
+                np.zeros(self.system.num_channels, self.system.num_channels),
+                H_plus(a, l, eta),
             )
-            Z_plus = np.multiply(
-                k_factor, H_plus(a, l, eta) - a * R * H_plus_prime(a, l, eta)
-            )
+
+            Z_minus = Hm - a * R * H_minus_prime(a, l, eta)
+            Z_plus = Hp - a * R * H_plus_prime(a, l, eta)
             S = solve(Z_plus, Z_minus)
 
-            return R, S, x
+            return R, S, G
 
-    def wavefunction(self, r, uint, uext, i=0):
-        return np.where(
-            r < self.system.channel_radius / self.se[i, i].k, uint(r), uext(r)
+    def uext_prime_boundary(self, S, i=0):
+        out = S[i, 0] * H_plus_prime(
+            self.se[i, i].a, self.se[i, i].l, self.se[i, i].eta
         )
-
-    def external_wavefunction(self, S, i=0):
         if i == 0:
-            return lambda r: np.array(
-                VH_minus(r * se.k, se.l, se.eta) + S * VH_plus(r * se.k, se.l, se.eta),
-                dtype=complex,
+            return (
+                H_minus_prime(self.se[i, i].a, self.se[i, i].l, self.se[i, i].eta) + out
             )
         else:
-            return lambda r: np.array(
-                VH_minus(r * se.k, se.l, se.eta) + S * VH_plus(r * se.k, se.l, se.eta),
-                dtype=complex,
+            return out
+
+    def uext(self, S, i=0):
+        out = lambda r: S[i, 0] * H_plus_prime(
+            self.se[i, i].k * r, self.se[i, i].l, self.se[i, i].eta
+        )
+        if i == 0:
+            return lambda r: H_minus_prime(
+                self.se[i, i].k * r, self.se[i, i].l, self.se[i, i].eta
+            ) + out(r)
+        else:
+            return out
+
+    def wavefunction_full(self, r, uint, uext, i=0):
+        return np.where(
+            r < self.system.channel_radius / self.se[i, j].k, uint(r), uext(r)
+        )
+
+    def solve_wavefunction(self, where="internal"):
+        """
+        Solves the system and returns a callable for the reduced radial wavefunctions in each channel.
+        If there is just one channel, simply returns the callable, otherwise returns a list of
+        callables.
+        """
+        R, S, G = self.solve()
+
+        b = np.concatenate(
+            [
+                np.array(
+                    [
+                        (self.f(n, a) * self.uext_prime_boundary(j))
+                        for n in range(1, self.N + 1)
+                    ]
+                )
+                for j in range(self.system.num_channels)
+            ]
+        )
+        coeffs = np.split(np.dot(G, b), self.system.num_channels)
+
+        uint = []
+        uext = []
+        u = []
+        for i in range(self.system.num_channels):
+            c = coeffs[i]
+            uint.append(
+                lambda r: np.sum(
+                    [
+                        c[n - 1] * self.f(n, r * self.se[i, i].k)
+                        for n in range(1, self.N + 1)
+                    ],
+                    axis=0,
+                )
             )
-
-    def internal_wavefunction(self, se, S, x, i=0):
-        uext_prime = H_minus_prime(se.a, se.l, se.eta) + S * H_plus_prime(
-            se.a, se.l, se.eta
-        )
-
-        coeff = x * uext_prime
-        k = se.k
-
-        return lambda r: np.sum(
-            [coeff[n - 1] * self.f(n, r * k) for n in range(1, self.N + 1)], axis=0
-        )
-
-    def wavefunction_soln(self, where="internal"):
-        """
-        returns the R and S matrix, as well as a list of callables taking in r values
-        and returning channel wavefunctions. For the single-channel case, returns just
-        a single callable rather than a list.
-        """
-        R, S, x = self.solve()
+            uext.append(self.uext(S, i))
+            u.append(lambda r: self.wavefunction_full(r, uint[-1], uext[-1]))
 
         if not self.coupled_channels:
-            uint = self.internal_wavefunction(self.se[0, 0], S, x)
-            uext = self.external_wavefunction(self.se[0, 0], S)
-            if where == "internal":
-                return R, S, uint
-            elif where == "external":
-                return R, S, uext
-            elif where == "both":
-                return R, S, lambda r: self.wavefunction(r, uint, uext)
+            uint = uint[0]
+            uext = uext[0]
+            u = u[0]
+
+        if where == "external":
+            return uext
+        elif where == "internal":
+            return uint
         else:
-            wavefunctions = []
-            for i in range(self.system.num_channels):
-                pass
+            return u
 
 
 def yamaguchi_potential(r, rp, params):
@@ -615,7 +644,7 @@ def nonlocal_interaction_example():
     nbasis = 20
     solver_lm = LagrangeRMatrix(nbasis, sys, se)
 
-    R, S, u = solver_lm.solve()
+    R, S, _ = solver_lm.solve()
     delta = np.rad2deg(np.real(np.log(S) / 2j))
 
     print("\nYamaguchi potential test:\n delta:")
@@ -698,7 +727,7 @@ def coupled_channels_example(visualize=False):
                 plt.title(f"({i}, {j})")
                 plt.show()
 
-    R, S, uch = solver_lm.wavefunction_soln()
+    R, S, uch = solver_lm.solve_wavefunction()
 
     # S must be unitary
     assert np.isclose(np.linalg.det(S), 1.0)
@@ -745,7 +774,7 @@ def channel_radius_dependence_test():
 
         solver_lm = LagrangeRMatrix(40, sys, se)
 
-        R_lm, S_lm, u_lm = solver_lm.wavefunction_soln()
+        R_lm, S_lm, u_lm = solver_lm.solve_wavefunction()
         delta_lm, atten_lm = delta(S_lm)
 
         delta_grid[i] = delta_lm + 1.0j * atten_lm
@@ -803,7 +832,7 @@ def local_interaction_example():
     # Lagrange-Mesh
     solver_lm = LagrangeRMatrix(40, sys, se)
 
-    R_lm, S_lm, u_lm = solver_lm.wavefunction_soln("internal")
+    R_lm, S_lm, u_lm = solver_lm.solve_wavefunction("internal")
     R_lmp = u_lm(se.a) / (se.a * derivative(u_lm, se.a, dx=1.0e-6))
 
     u_lm = u_lm(r_values)
@@ -925,7 +954,7 @@ def rmse_RK_LM():
 
 if __name__ == "__main__":
     # channel_radius_dependence_test()
-    # local_interaction_example()
+    local_interaction_example()
     # nonlocal_interaction_example()
     coupled_channels_example()
     # rmse_RK_LM()

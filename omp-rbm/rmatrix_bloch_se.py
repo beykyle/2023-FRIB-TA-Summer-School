@@ -502,6 +502,7 @@ class LagrangeRMatrix:
 
             # calculate collision matrix (S-matrix)
             # Eqns. 16 and 17 in [Descouvemont, 2016]
+            #TODO this k_factor might need to be transposed
             k_factor = np.repeat(
                 np.array([np.sqrt(1.0 / se.k) for se in np.diag(self.se)]),
                 self.num_channels,
@@ -566,7 +567,7 @@ class LagrangeRMatrix:
         else:
             wavefunctions = []
             for i in range(self.system.num_channels):
-                coeff = x[i] *
+                pass
 
 
 def yamaguchi_potential(r, rp, params):
@@ -691,6 +692,8 @@ def coupled_channels_example(visualize=False):
         for i in range(3):
             for j in range(3):
                 plt.imshow(np.real(solver_lm.single_channel_bloch_se_matrix(i, j)))
+                plt.xlabel("n")
+                plt.ylabel("m")
                 plt.colorbar()
                 plt.title(f"({i}, {j})")
                 plt.show()

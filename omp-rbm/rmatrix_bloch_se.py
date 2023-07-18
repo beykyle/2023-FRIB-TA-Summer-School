@@ -8,17 +8,19 @@ from scipy.interpolate import interp1d
 from scipy.misc import derivative
 from scipy.linalg import solve, ishermitian
 
-alpha = 1./137.0359991 # dimensionless fine structure constant
-hbarc = 197.3 # MeV fm
+alpha = 1.0 / 137.0359991  # dimensionless fine structure constant
+hbarc = 197.3  # MeV fm
 
-def block(matrix : np.array, block, block_size):
+
+def block(matrix: np.array, block, block_size):
     """
     get submatrix with coordinates block from matrix, where
     each block is defined by block_size elements along each dimension
     """
-    i,j = block
-    n,m = block_size
-    return matrix[ i * n : i*n + n , j * m : j * m + m]
+    i, j = block
+    n, m = block_size
+    return matrix[i * n : i * n + n, j * m : j * m + m]
+
 
 def Gamow_factor(l, eta):
     if eta == 0.0:
@@ -76,6 +78,11 @@ def H_minus_prime(s, ell, eta, dx=1e-6):
     return derivative(lambda z: H_minus(z, ell, eta), s, dx=dx)
 
 
+# vectorized versions of arbitrary precision Coulomb funcs form mpmath
+VH_minus = np.frompyfunc(H_minus, 3, 1)
+VH_plus = np.frompyfunc(H_minus, 3, 1)
+
+
 def phi_free(s, ell, eta):
     """
     Solution to the "free" (V = 0) radial Schrödinger equation.
@@ -104,14 +111,14 @@ def woods_saxon_potential(r, params):
 
 def surface_peaked_gaussian_potential(r, params):
     V, W, R, a = params
-    return -(V + 1j * W) * np.exp(-((r - R) ** 2) / a**2)
+    return -(V + 1j * W) * np.exp(-((r - R) ** 2) / (2 * np.pi * a) ** 2)
 
 
 def coulomb_potential(zz, r, R):
     if r > R:
         return zz * alpha * hbarc / r
     else:
-        return zz * alpha * hbarc  / (2 * R) * (3 - (r / R)** 2 )
+        return zz * alpha * hbarc / (2 * R) * (3 - (r / R) ** 2)
 
 
 @dataclass
@@ -174,7 +181,7 @@ class RadialSEChannel:
             self.VCoulombScaled = (
                 lambda s: coulomb_interaction(self.Zzprod, s / self.k) / self.E
             )
-            assert(self.eta > 0)
+            assert self.eta > 0
         else:
             self.VCoulombScaled = lambda s: 0.0
             self.eta = 0
@@ -194,9 +201,9 @@ class RadialSEChannel:
         s_0 = self.domain[0]
         l = self.l
         C_l = Gamow_factor(l, self.eta)
-        rho_0 = (s_0 / C_l) ** (1/(l+1))
-        u0 = C_l * rho_0**(l+1)
-        uprime0 = C_l * (l+1) * rho_0**l
+        rho_0 = (s_0 / C_l) ** (1 / (l + 1))
+        u0 = C_l * rho_0 ** (l + 1)
+        uprime0 = C_l * (l + 1) * rho_0**l
         return np.array([u0 * (1 + 0j), uprime0 * (1 + 0j)])
 
     def s_grid(self, size=200):
@@ -260,19 +267,22 @@ class LagrangeRMatrix:
         self.se = radial_se
 
         if self.system.Zproj * self.system.Ztarget == 0:
-            self.coulomb_potential = lambda n, m, i=0, j=0 : 0
+            self.coulomb_potential = lambda n, m, i=0, j=0: 0
 
         if self.system.num_channels > 1:
             # interaction should take the form of a square matrix
             assert isinstance(self.se, (np.ndarray, np.generic))
-            assert radial_se.shape == (self.system.num_channels, self.system.num_channels)
+            assert radial_se.shape == (
+                self.system.num_channels,
+                self.system.num_channels,
+            )
 
             self.coupled_channels = True
 
         else:
             if not isinstance(self.se, (np.ndarray, np.generic)):
                 self.se = np.array([[self.se]])
-            assert self.se.shape == (1,1)
+            assert self.se.shape == (1, 1)
 
             self.coupled_channels = False
 
@@ -300,7 +310,7 @@ class LagrangeRMatrix:
         """
         assert n <= self.N and n >= 1
 
-        a = self.se[i,i].a
+        a = self.se[i, i].a
         x = s / a
         xn = self.abscissa[n - 1]
 
@@ -325,7 +335,7 @@ class LagrangeRMatrix:
             return 0  # local potentials are diagonal
 
         xn = self.abscissa[n - 1]
-        a = self.se[i,j].a
+        a = self.se[i, j].a
 
         return self.se[i, j].VCoulombScaled(xn * a)
 
@@ -352,7 +362,7 @@ class LagrangeRMatrix:
             return 0  # local potentials are diagonal
 
         xn = self.abscissa[n - 1]
-        a = self.se[i,j].a
+        a = self.se[i, j].a
 
         return self.se[i, j].Vscaled(xn * a)
 
@@ -369,7 +379,7 @@ class LagrangeRMatrix:
         wn = self.weights[n - 1]
         wm = self.weights[m - 1]
 
-        a = self.se[i,j].a
+        a = self.se[i, j].a
 
         return self.se[i, j].Vscaled(xn * a, xm * a) * np.sqrt(wm * wn) * a
 
@@ -412,22 +422,33 @@ class LagrangeRMatrix:
         C = np.zeros((sz, sz), dtype=complex)
         for i in range(self.system.num_channels):
             for j in range(self.system.num_channels):
-                C[i*self.N : i*self.N + self.N,
-                  j*self.N : j*self.N + self.N] = self.single_channel_bloch_se_matrix(i, j)
+                print(self.se[i, j].Vscaled(self.abscissa[0] * self.se[0, 0].a))
+                C[
+                    i * self.N : i * self.N + self.N, j * self.N : j * self.N + self.N
+                ] = self.single_channel_bloch_se_matrix(i, j)
         return C
 
     def single_channel_bloch_se_matrix(self, i=None, j=None):
         C = np.zeros((self.N, self.N), dtype=complex)
         # TODO  use symmetry to calculate more efficiently
         # Eq. 6.10 in [Baye, 2015], scaled by 1/E and with r->s=kr
+
+        # diagonal submatrices in channel space
+        # include full bloch-SE
+        if i == j:
+            element = lambda n, m: (
+                self.kinetic_bloch(n, m, i, j)
+                + self.potential(n, m, i, j)
+                + self.coulomb_potential(n, m, i, j)
+                - (1.0 if n == m else 0.0)
+            )
+        # off-diagonal terms only include coupling potentials
+        else:
+            element = lambda n, m: self.potential(n, m, i, j)
+
         for n in range(1, self.N + 1):
             for m in range(1, self.N + 1):
-                C[n - 1, m - 1] = (
-                    self.kinetic_bloch(n, m, i, j)
-                    + self.potential(n, m, i, j)
-                    + self.coulomb_potential(n, m, i, j)
-                )
-            C[n - 1, n - 1] -= 1.0
+                C[n - 1, m - 1] = element(n, m)
 
         return C
 
@@ -443,11 +464,12 @@ class LagrangeRMatrix:
         """
         A = self.bloch_se_matrix()
 
+        a = self.se[0, 0].a
+        l = self.se[0, 0].l
+        eta = self.se[0, 0].eta
+
         if not self.coupled_channels:
             # Eq. 6.11 in [Baye, 2015]
-            a = self.se[0, 0].a
-            l = self.se[0, 0].l
-            eta = self.se[0, 0].eta
             b = np.array([self.f(n, a) for n in range(1, self.N + 1)])
             x = solve(A, b)
             R = np.dot(x, b) / (a * a)
@@ -472,40 +494,49 @@ class LagrangeRMatrix:
             # Eq. 15 in [Descouvemont, 2016]
             for i in range(self.system.num_channels):
                 for j in range(self.system.num_channels):
-                    a = self.se[i,i].a
-                    submatrix = block(Ainv, (i,j), (self.N, self.N))
-                    b1 = b[i*self.N:i*self.N+self.N]
-                    b2 = b[j*self.N:j*self.N+self.N]
+                    a = self.se[i, i].a
+                    submatrix = block(Ainv, (i, j), (self.N, self.N))
+                    b1 = b[i * self.N : i * self.N + self.N]
+                    b2 = b[j * self.N : j * self.N + self.N]
                     R[i, j] = np.dot(b1, np.dot(submatrix, b2)) / (a * a)
 
             # calculate collision matrix (S-matrix)
             # Eqns. 16 and 17 in [Descouvemont, 2016]
-            a = self.se[0,0].a
-            l = self.se[0,0].l
-            eta = self.se[0,0].eta
-            Z_minus = H_minus(a, l, eta) - a * R * H_minus_prime(a, l, eta)
-            Z_plus = H_plus(a, l, eta) - a * R * H_plus_prime(a, l, eta)
+            k_factor = np.repeat(
+                np.array([np.sqrt(1.0 / se.k) for se in np.diag(self.se)]),
+                self.num_channels,
+            ).reshape(self.num_channels, self.num_channels)
+
+            Z_minus = np.multiply(
+                k_factor, H_minus(a, l, eta) - a * R * H_minus_prime(a, l, eta)
+            )
+            Z_plus = np.multiply(
+                k_factor, H_plus(a, l, eta) - a * R * H_plus_prime(a, l, eta)
+            )
             S = solve(Z_plus, Z_minus)
 
             return R, S, x
 
-    def wavefunction(self, r, uint, uext, i=0, j=0):
-        return np.where(r < self.system.channel_radius/self.se[i,j].k, uint(r), uext(r))
-
-    def external_wavefunction(self, se, S):
-        VH_minus = np.frompyfunc(H_minus,3,1)
-        VH_plus = np.frompyfunc(H_minus,3,1)
-
-        return lambda r : np.array(
-            VH_minus(r*se.k, se.l, se.eta)
-          + S * VH_plus(r*se.k, se.l, se.eta)
-        , dtype=complex
+    def wavefunction(self, r, uint, uext, i=0):
+        return np.where(
+            r < self.system.channel_radius / self.se[i, i].k, uint(r), uext(r)
         )
 
-    def internal_wavefunction(self, se, S, x):
-        uext_prime = (
-            H_minus_prime(se.a, se.l, se.eta)
-          + S * H_plus_prime(se.a, se.l, se.eta)
+    def external_wavefunction(self, S, i=0):
+        if i == 0:
+            return lambda r: np.array(
+                VH_minus(r * se.k, se.l, se.eta) + S * VH_plus(r * se.k, se.l, se.eta),
+                dtype=complex,
+            )
+        else:
+            return lambda r: np.array(
+                VH_minus(r * se.k, se.l, se.eta) + S * VH_plus(r * se.k, se.l, se.eta),
+                dtype=complex,
+            )
+
+    def internal_wavefunction(self, se, S, x, i=0):
+        uext_prime = H_minus_prime(se.a, se.l, se.eta) + S * H_plus_prime(
+            se.a, se.l, se.eta
         )
 
         coeff = x * uext_prime
@@ -518,7 +549,8 @@ class LagrangeRMatrix:
     def wavefunction_soln(self, where="internal"):
         """
         returns the R and S matrix, as well as a list of callables taking in r values
-        and returning channel wavefunctions
+        and returning channel wavefunctions. For the single-channel case, returns just
+        a single callable rather than a list.
         """
         R, S, x = self.solve()
 
@@ -534,7 +566,7 @@ class LagrangeRMatrix:
         else:
             wavefunctions = []
             for i in range(self.system.num_channels):
-                pass  # TODO
+                coeff = x[i] *
 
 
 def yamaguchi_potential(r, rp, params):
@@ -558,7 +590,7 @@ def yamaguchi_swave_delta(k, params):
         + k**4 / (b * d)
     )
 
-    delta = np.rad2deg( np.arctan( k / kcotdelta ) )
+    delta = np.rad2deg(np.arctan(k / kcotdelta))
     return delta
 
 
@@ -583,7 +615,7 @@ def nonlocal_interaction_example():
     solver_lm = LagrangeRMatrix(nbasis, sys, se)
 
     R, S, u = solver_lm.solve()
-    delta = np.rad2deg( np.real( np.log(S) / 2j ))
+    delta = np.rad2deg(np.real(np.log(S) / 2j))
 
     print("\nYamaguchi potential test:\n delta:")
     print("Lagrange-Legendre Mesh: {:.6f} [degrees]".format(delta))
@@ -594,26 +626,26 @@ def nonlocal_interaction_example():
     )
 
 
-def coupled_channels_example():
+def coupled_channels_example(visualize=False):
     """
     3 level system example with local diagonal and transition potentials and neutral
-    particles
+    particles. Potential is real, so S-matrix is unitary and symmetric
     """
     mass = 939  # reduced mass of scattering system MeV / c^2
 
     # Potential parameters
     V = 60  # real potential strength
-    W = 20  # imag potential strength
+    W = 0  # imag potential strength
     R = 4  # Woods-Saxon potential radius
     a = 0.5  # Woods-Saxon potential diffuseness
     params = (V, W, R, a)
 
-    nodes_within_radius = 5
+    nodes_within_radius = 10
 
     system = ProjectileTargetSystem(
         incident_energy=50,
         reduced_mass=939,
-        channel_radius=5*(2*np.pi),
+        channel_radius=5 * (2 * np.pi),
         num_channels=3,
         level_energies=[0, 12, 20],
     )
@@ -638,6 +670,7 @@ def coupled_channels_example():
     Wt = W / transition_dampening_factor
 
     # off diagonal potential terms
+    Vt = 0.0
     for i in range(system.num_channels):
         for j in range(system.num_channels):
             if i != j:
@@ -650,9 +683,23 @@ def coupled_channels_example():
                     threshold_energy=system.level_energies[i],
                 )
 
-    solver_lm = LagrangeRMatrix(30, system, matrix)
+    solver_lm = LagrangeRMatrix(40, system, matrix)
+
+    H = solver_lm.bloch_se_matrix()
+
+    if visualize:
+        for i in range(3):
+            for j in range(3):
+                plt.imshow(np.real(solver_lm.single_channel_bloch_se_matrix(i, j)))
+                plt.colorbar()
+                plt.title(f"({i}, {j})")
+                plt.show()
 
     R, S, uch = solver_lm.wavefunction_soln()
+
+    # S must be unitary
+    assert np.isclose(np.linalg.det(S), 1.0)
+    assert np.allclose(S, S.T)
 
     r_values = np.linspace(0.05, channel_radius, 500)
 
@@ -688,7 +735,9 @@ def channel_radius_dependence_test():
             l=0,
             system=sys,
             interaction=lambda r: woods_saxon_potential(r, params),
-            coulomb_interaction=lambda eta, r: np.vectorize(coulomb_potential)(zz, r, R0)
+            coulomb_interaction=lambda eta, r: np.vectorize(coulomb_potential)(
+                zz, r, R0
+            ),
         )
 
         solver_lm = LagrangeRMatrix(40, sys, se)
@@ -719,16 +768,16 @@ def local_interaction_example():
     sys = ProjectileTargetSystem(
         incident_energy=20,
         reduced_mass=939,
-        channel_radius=nodes_within_radius*(2*np.pi),
+        channel_radius=nodes_within_radius * (2 * np.pi),
         Ztarget=40,
-        #Zproj=1
+        # Zproj=1
     )
 
     se = RadialSEChannel(
         l=1,
         system=sys,
         interaction=lambda r: woods_saxon_potential(r, params),
-        #coulomb_interaction=lambda zz, r: np.vectorize(coulomb_potential)(zz, r, R0)
+        # coulomb_interaction=lambda zz, r: np.vectorize(coulomb_potential)(zz, r, R0)
     )
 
     s_values = se.s_grid(1000)
@@ -760,7 +809,7 @@ def local_interaction_example():
     delta_rk, atten_rk = delta(S_rk)
 
     # normalization and phase matching
-    u_rk = u_rk * np.max( np.real(u_lm)) / np.max( np.real(u_rk) ) * (-1j)
+    u_rk = u_rk * np.max(np.real(u_lm)) / np.max(np.real(u_rk)) * (-1j)
 
     print(f"k: {se.k}")
     print(f"R-Matrix RK: {R_rk:.3e}")
@@ -796,27 +845,28 @@ def rmse_RK_LM():
 
     nodes_within_radius = 5
 
-    lgrid = np.arange(0,6)
-    egrid = np.linspace(0.01,100,100)
+    lgrid = np.arange(0, 10)
+    egrid = np.linspace(0.01, 100, 100)
 
-    error_matrix = np.zeros( (len(lgrid), len(egrid)), dtype=complex)
+    error_matrix = np.zeros((len(lgrid), len(egrid)), dtype=complex)
 
     for l in lgrid:
-        for i,e in enumerate(egrid):
-
+        for i, e in enumerate(egrid):
             sys = ProjectileTargetSystem(
                 incident_energy=e,
                 reduced_mass=939,
-                channel_radius=nodes_within_radius*(2*np.pi),
+                channel_radius=nodes_within_radius * (2 * np.pi),
                 Ztarget=40,
-                Zproj=1
+                Zproj=1,
             )
 
             se = RadialSEChannel(
                 l=l,
                 system=sys,
                 interaction=lambda r: woods_saxon_potential(r, params),
-                coulomb_interaction=lambda zz, r: np.vectorize(coulomb_potential)(zz, r, R0)
+                coulomb_interaction=lambda zz, r: np.vectorize(coulomb_potential)(
+                    zz, r, R0
+                ),
             )
 
             # Runge-Kutta
@@ -840,30 +890,39 @@ def rmse_RK_LM():
             delta_lm, atten_lm = delta(S_lm)
             delta_rk, atten_rk = delta(S_rk)
 
-            rel_err = 0 + 0j
+            err = 0 + 0j
 
-            if np.fabs(delta_rk) > 1E-12:
-                rel_err += (delta_lm - delta_rk) / delta_rk
+            if np.fabs(delta_rk) > 1e-12:
+                err += np.fabs(delta_lm - delta_rk)
 
-            if np.fabs(atten_rk) > 1E-12:
-                rel_err += 1j * (atten_lm - atten_rk) / atten_rk
+            if np.fabs(atten_rk) > 1e-12:
+                err += 1j * np.fabs(atten_lm - atten_rk)
 
-            error_matrix[l,i] = rel_err
+            error_matrix[l, i] = err
 
+    lines = []
     for l in lgrid:
-        p = plt.plot( egrid, np.real(error_matrix[l,:]), label=r"$l = %d$" % l )
-        plt.plot( egrid, np.imag(error_matrix[l,:]), ':', label=r"$l = %d$" % l , color=p[0].get_color() )
+        (p1,) = plt.plot(egrid, np.real(error_matrix[l, :]), label=r"$l = %d$" % l)
+        (p2,) = plt.plot(egrid, np.imag(error_matrix[l, :]), ":", color=p1.get_color())
+        lines.append([p1, p2])
 
-    plt.ylabel("relative error in phase shift [degrees]")
-    plt.xlabel("Energy [MeV]")
-    plt.legend()
+    plt.ylabel(r"$\Delta \equiv | \delta^{\rm RK} - \delta^{\rm LM} |$ [degrees]")
+    plt.xlabel(r"$E$ [MeV]")
+
+    legend1 = plt.legend(
+        lines[0], [r"$\mathfrak{Re}\, \Delta$", r"$\mathfrak{Im}\, \Delta$"], loc=0
+    )
+    plt.legend([l[0] for l in lines], [l[0].get_label() for l in lines], loc=1)
+    plt.ylim([0, 1])
     plt.yscale("log")
+    plt.gca().add_artist(legend1)
     plt.tight_layout()
     plt.show()
 
+
 if __name__ == "__main__":
-    #channel_radius_dependence_test()
-    #local_interaction_example()
-    #nonlocal_interaction_example()
+    # channel_radius_dependence_test()
+    # local_interaction_example()
+    # nonlocal_interaction_example()
     coupled_channels_example()
-    #rmse_RK_LM()
+    # rmse_RK_LM()

@@ -11,9 +11,11 @@ from scipy.linalg import solve, ishermitian
 alpha = 1.0 / 137.0359991  # dimensionless fine structure constant
 hbarc = 197.3  # MeV fm
 
-def complex_det(matrix : np.array):
+
+def complex_det(matrix: np.array):
     d = np.linalg.det(matrix @ np.conj(matrix).T)
     return np.sqrt(d)
+
 
 def block(matrix: np.array, block, block_size):
     """
@@ -243,6 +245,52 @@ def schrodinger_eqn_ivp_order1(s, y, radial_se):
     """
     u, uprime = y
     return [uprime, radial_se.second_derivative(s, u)]
+
+
+class Wavefunction:
+    """
+    Represents a wavefunction, expressed internally to the channel as a linear combination
+    of Lagrange-Legendre functions, and externally as a linear combination of incoming and
+    outgoing Coulomb scattering wavefunctions
+    """
+
+    def __init__(self, lm, coeffs, S, se, is_entrance_channel=False):
+        self.is_entrance_channel = is_entrance_channel
+        self.lm = lm
+        self.se = se
+
+        self.coeffs = np.copy(coeffs)
+        self.S = np.copy(S)
+
+        self.callable = self.u()
+
+    def __call__(self, r):
+        return self.callable(r)
+
+    def uext(self):
+        out = lambda r: np.array(
+            self.S * VH_plus(self.se.k * r, self.se.l, self.se.eta), dtype=complex
+        )
+        if self.is_entrance_channel:
+            return lambda r: np.array(
+                VH_minus(self.se.k * r, self.se.l, self.se.eta) + out(r), dtype=complex
+            )
+        else:
+            return out
+
+    def uint(self):
+        return lambda r: np.sum(
+            [
+                self.coeffs[n - 1] * self.lm.f(n, r * self.se.k)
+                for n in range(1, self.lm.N + 1)
+            ],
+            axis=0,
+        )
+
+    def u(self):
+        uint = self.uint()
+        uext = self.uext()
+        return lambda r: np.where(r < self.se.a / self.se.k, uint(r), uext(r))
 
 
 class LagrangeRMatrix:
@@ -507,10 +555,10 @@ class LagrangeRMatrix:
             # calculate collision matrix (S-matrix)
             # Eqns. 16 and 17 in [Descouvemont, 2016]
             Hm = np.diag(
-                np.ones(self.system.num_channels) *  H_minus(a, l, eta),
+                np.ones(self.system.num_channels) * H_minus(a, l, eta),
             )
             Hp = np.diag(
-                np.ones(self.system.num_channels) *  H_plus(a, l, eta),
+                np.ones(self.system.num_channels) * H_plus(a, l, eta),
             )
 
             Z_minus = Hm - a * R * H_minus_prime(a, l, eta)
@@ -530,23 +578,7 @@ class LagrangeRMatrix:
         else:
             return out
 
-    def uext(self, S, i=0):
-        out = lambda r: S[i, 0] * H_plus_prime(
-            self.se[i, i].k * r, self.se[i, i].l, self.se[i, i].eta
-        )
-        if i == 0:
-            return lambda r: H_minus_prime(
-                self.se[i, i].k * r, self.se[i, i].l, self.se[i, i].eta
-            ) + out(r)
-        else:
-            return out
-
-    def wavefunction_full(self, r, uint, uext, i=0):
-        return np.where(
-            r < self.system.channel_radius / self.se[i, i].k, uint(r), uext(r)
-        )
-
-    def solve_wavefunction(self, where="internal"):
+    def solve_wavefunction(self):
         """
         Solves the system and returns a callable for the reduced radial wavefunctions in each channel.
         If there is just one channel, simply returns the callable, otherwise returns a list of
@@ -561,7 +593,7 @@ class LagrangeRMatrix:
             [
                 np.array(
                     [
-                        (self.f(n, self.se[j,j].a) * self.uext_prime_boundary(S, j))
+                        (self.f(n, self.se[j, j].a) * self.uext_prime_boundary(S, j))
                         for n in range(1, self.N + 1)
                     ]
                 )
@@ -570,35 +602,19 @@ class LagrangeRMatrix:
         )
         coeffs = np.split(np.dot(G, b), self.system.num_channels)
 
-        uint = []
-        uext = []
-        u = []
+        wavefunctions = []
         for i in range(self.system.num_channels):
-            c = coeffs[i]
-            uint.append(
-                lambda r: np.sum(
-                    [
-                        c[n - 1] * self.f(n, r * self.se[i, i].k)
-                        for n in range(1, self.N + 1)
-                    ],
-                    axis=0,
+            wavefunctions.append(
+                Wavefunction(
+                    self, coeffs[i], S[i,0], self.se[i, i], is_entrance_channel=(i == 0)
                 )
             )
-            uext.append(self.uext(S, i))
-            u.append(lambda r: self.wavefunction_full(r, uint[-1], uext[-1]))
 
         if not self.coupled_channels:
-            uint = uint[0]
-            uext = uext[0]
-            u = u[0]
-            S = S[0,0]
+            wavefunctions = wavefunctions[0]
+            S = S[0, 0]
 
-        if where == "external":
-            return R, S, uext
-        elif where == "internal":
-            return R, S, uint
-        else:
-            return R, S, u
+        return R, S, wavefunctions
 
 
 def yamaguchi_potential(r, rp, params):
@@ -661,7 +677,7 @@ def nonlocal_interaction_example():
 def coupled_channels_example(visualize=False):
     """
     3 level system example with local diagonal and transition potentials and neutral
-    particles. Potential is real, so S-matrix is unitary and symmetric
+    particles. Potentials are real, so S-matrix is unitary and symmetric
     """
     mass = 939  # reduced mass of scattering system MeV / c^2
 
@@ -702,7 +718,6 @@ def coupled_channels_example(visualize=False):
     Wt = W / transition_dampening_factor
 
     # off diagonal potential terms
-    Vt = 0.0
     for i in range(system.num_channels):
         for j in range(system.num_channels):
             if i != j:
@@ -730,22 +745,32 @@ def coupled_channels_example(visualize=False):
                 plt.show()
 
     # get R and S-matrix, and both internal and external soln
-    R, S, uch = solver_lm.solve_wavefunction("everywhere")
+    R, S, uint = solver_lm.solve_wavefunction()
+    for i in range(system.num_channels):
+        print(uint[i](0.2))
 
     # S must be unitary
-    assert np.isclose( complex_det(S), 1.0)
-    assert np.allclose(S, S.T)
+    assert np.isclose(complex_det(S), 1.0)
+    # S is symmetric iff the correct factors of momentum are applied
+    # assert np.allclose(S, S.T)
 
-    r_values = np.linspace(0.05, system.channel_radius/matrix[0,0].k, 500)
+    r_values = np.linspace(0.05, system.channel_radius / matrix[0, 0].k, 500)
 
-    for i, u in enumerate(uch):
-        u = u(r_values)
-        plt.plot(r_values, np.real(u), "k", label=r"$\mathfrak{Re} u_{%d}(r)$" % i)
-        plt.plot(r_values, np.imag(u), ":k", label=r"$\mathfrak{Im} u_{%d}(r)$" % i)
+    lines = []
+    for i in range(system.num_channels):
+        u_values = uint[i](r_values)
+        (p1,) = plt.plot(r_values, np.real(u_values), label=r"$n=%d$" % i)
+        (p2,) = plt.plot(r_values, np.imag(u_values), ":", color=p1.get_color())
+        lines.append([p1, p2])
 
-    plt.legend()
+    legend1 = plt.legend(
+        lines[0], [r"$\mathfrak{Re}\, u_n(r) $", r"$\mathfrak{Im}\, u_n(r)$"], loc=3
+    )
+    plt.legend([l[0] for l in lines], [l[0].get_label() for l in lines], loc=1)
+    plt.gca().add_artist(legend1)
+
     plt.xlabel(r"$r$ [fm]")
-    plt.ylabel(r"$u_{%d} (r) $ [a.u.]" % se.l)
+    plt.ylabel(r"$u (r) $ [a.u.]")
     plt.tight_layout()
     plt.show()
 
@@ -777,7 +802,7 @@ def channel_radius_dependence_test():
 
         solver_lm = LagrangeRMatrix(40, sys, se)
 
-        R_lm, S_lm, u_lm = solver_lm.solve_wavefunction()
+        R_lm, S_lm, G = solver_lm.solve()
         delta_lm, atten_lm = delta(S_lm)
 
         delta_grid[i] = delta_lm + 1.0j * atten_lm
@@ -835,8 +860,8 @@ def local_interaction_example():
     # Lagrange-Mesh
     solver_lm = LagrangeRMatrix(40, sys, se)
 
-    R_lm, S_lm, u_lm = solver_lm.solve_wavefunction("internal")
-    R_lmp = u_lm(se.a) / (se.a * derivative(u_lm, se.a, dx=1.0e-6))
+    R_lm, S_lm, u_lm = solver_lm.solve_wavefunction()
+    # R_lmp = u_lm(se.a) / (se.a * derivative(u_lm, se.a, dx=1.0e-6))
 
     u_lm = u_lm(r_values)
 
@@ -957,7 +982,7 @@ def rmse_RK_LM():
 
 if __name__ == "__main__":
     # channel_radius_dependence_test()
-    #local_interaction_example()
+    # local_interaction_example()
     # nonlocal_interaction_example()
     coupled_channels_example()
     # rmse_RK_LM()

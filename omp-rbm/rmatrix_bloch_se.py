@@ -88,13 +88,6 @@ VH_minus = np.frompyfunc(H_minus, 3, 1)
 VH_plus = np.frompyfunc(H_minus, 3, 1)
 
 
-def phi_free(s, ell, eta):
-    """
-    Solution to the "free" (V = 0) radial Schrödinger equation.
-    """
-    return -0.5j * (H_plus(s, ell, eta) - H_minus(s, ell, eta))
-
-
 def smatrix(Rl, a, l, eta):
     return (H_minus(a, l, eta) - a * Rl * H_minus_prime(a, l, eta)) / (
         H_plus(a, l, eta) - a * Rl * H_plus_prime(a, l, eta)
@@ -267,30 +260,39 @@ class Wavefunction:
     def __call__(self, r):
         return self.callable(r)
 
-    def uext(self):
+    def calculate_s(self, units):
+        if units == "r":
+            return lambda r : r * self.se.k
+        elif units == "s":
+            return lambda s : s
+
+    def uext(self, units="r"):
         out = lambda r: np.array(
-            self.S * VH_plus(self.se.k * r, self.se.l, self.se.eta), dtype=complex
+            self.S * VH_plus(self.calculate_s(units)(r), self.se.l, self.se.eta), dtype=complex
         )
         if self.is_entrance_channel:
             return lambda r: np.array(
-                VH_minus(self.se.k * r, self.se.l, self.se.eta) + out(r), dtype=complex
+                VH_minus(self.calculate_s(units)(r), self.se.l, self.se.eta) + out(r), dtype=complex
             )
         else:
             return out
 
-    def uint(self):
+    def uint(self, units="r"):
         return lambda r: np.sum(
             [
-                self.coeffs[n - 1] * self.lm.f(n, r * self.se.k)
+                self.coeffs[n - 1] * self.lm.f(n, self.calculate_s(units)(r))
                 for n in range(1, self.lm.N + 1)
             ],
             axis=0,
         )
 
-    def u(self):
-        uint = self.uint()
-        uext = self.uext()
-        return lambda r: np.where(r < self.se.a / self.se.k, uint(r), uext(r))
+    def u(self, units="r"):
+        ch_radius = self.se.a / self.se.k
+        uint = self.uint(units)
+        uext = self.uext(units)
+        #factor = uint(ch_radius)/uext(ch_radius)
+        factor  = 1.
+        return lambda r: np.where(r < ch_radius, uint(r), factor * uext(r))
 
 
 class LagrangeRMatrix:
@@ -713,7 +715,7 @@ def coupled_channels_example(visualize=False):
 
     # transition potentials have depths damped by a factor compared to diagonal terms
     # and use surface peaked Gaussian form factors rather than Woods-Saxons
-    transition_dampening_factor = 10
+    transition_dampening_factor = 1
     Vt = V / transition_dampening_factor
     Wt = W / transition_dampening_factor
 
@@ -746,15 +748,13 @@ def coupled_channels_example(visualize=False):
 
     # get R and S-matrix, and both internal and external soln
     R, S, uint = solver_lm.solve_wavefunction()
-    for i in range(system.num_channels):
-        print(uint[i](0.2))
 
     # S must be unitary
     assert np.isclose(complex_det(S), 1.0)
     # S is symmetric iff the correct factors of momentum are applied
     # assert np.allclose(S, S.T)
 
-    r_values = np.linspace(0.05, system.channel_radius / matrix[0, 0].k, 500)
+    r_values = np.linspace(0.05, 40, 500)
 
     lines = []
     for i in range(system.num_channels):
@@ -840,7 +840,7 @@ def local_interaction_example():
         # coulomb_interaction=lambda zz, r: np.vectorize(coulomb_potential)(zz, r, R0)
     )
 
-    s_values = se.s_grid(1000)
+    s_values = np.linspace(0.01, 40,200)
     r_values = s_values / se.k
 
     # Runge-Kutta
@@ -882,7 +882,7 @@ def local_interaction_example():
     print(f"complex phase shift RK: {atten_rk:.3e} degrees")
     print(f"complex phase shift LM: {atten_lm:.3e} degrees")
 
-    plt.plot(r_values, np.real(u_rk), "k", label="RK")
+    plt.plot(r_values, np.real(u_rk), "k", label="Runge-Kutta")
     plt.plot(r_values, np.imag(u_rk), ":k")
 
     plt.plot(r_values, np.real(u_lm), "r", label="Lagrange-Legendre")
@@ -982,7 +982,7 @@ def rmse_RK_LM():
 
 if __name__ == "__main__":
     # channel_radius_dependence_test()
-    # local_interaction_example()
+    local_interaction_example()
     # nonlocal_interaction_example()
     coupled_channels_example()
     # rmse_RK_LM()

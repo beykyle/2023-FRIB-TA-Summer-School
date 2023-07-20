@@ -247,10 +247,11 @@ class Wavefunction:
     outgoing Coulomb scattering wavefunctions
     """
 
-    def __init__(self, lm, coeffs, S, se, is_entrance_channel=False):
+    def __init__(self, lm, coeffs, S, se, norm_factor, is_entrance_channel=False):
         self.is_entrance_channel = is_entrance_channel
         self.lm = lm
         self.se = se
+        self.norm_factor = norm_factor
 
         self.coeffs = np.copy(coeffs)
         self.S = np.copy(S)
@@ -290,8 +291,7 @@ class Wavefunction:
         ch_radius = self.se.a / self.se.k
         uint = self.uint(units)
         uext = self.uext(units)
-        #factor = uint(ch_radius)/uext(ch_radius)
-        factor  = 1.
+        factor = 1.0
         return lambda r: np.where(r < ch_radius, uint(r), factor * uext(r))
 
 
@@ -590,6 +590,7 @@ class LagrangeRMatrix:
 
         if not self.coupled_channels:
             S = np.array([[S]])
+            R = np.array([[R]])
 
         b = np.concatenate(
             [
@@ -606,15 +607,17 @@ class LagrangeRMatrix:
 
         wavefunctions = []
         for i in range(self.system.num_channels):
+            norm_factor = self.uext_prime_boundary(S,i) * self.se[i,i].a * R[i,i]
             wavefunctions.append(
                 Wavefunction(
-                    self, coeffs[i], S[i,0], self.se[i, i], is_entrance_channel=(i == 0)
+                    self, coeffs[i], S[i,0], self.se[i, i], norm_factor, is_entrance_channel=(i == 0)
                 )
             )
 
         if not self.coupled_channels:
             wavefunctions = wavefunctions[0]
             S = S[0, 0]
+            R = R[0, 0]
 
         return R, S, wavefunctions
 
@@ -755,22 +758,37 @@ def coupled_channels_example(visualize=False):
     # assert np.allclose(S, S.T)
 
     r_values = np.linspace(0.05, 40, 500)
+    s_values = np.linspace(0.05, system.channel_radius, 500)
 
     lines = []
     for i in range(system.num_channels):
-        u_values = uint[i](r_values)
-        (p1,) = plt.plot(r_values, np.real(u_values), label=r"$n=%d$" % i)
-        (p2,) = plt.plot(r_values, np.imag(u_values), ":", color=p1.get_color())
+        u_values = uint[i].uint(units="s")(s_values)
+        (p1,) = plt.plot(s_values, np.real(u_values), label=r"$n=%d$" % i)
+        (p2,) = plt.plot(s_values, np.imag(u_values), ":", color=p1.get_color())
         lines.append([p1, p2])
 
     legend1 = plt.legend(
-        lines[0], [r"$\mathfrak{Re}\, u_n(r) $", r"$\mathfrak{Im}\, u_n(r)$"], loc=3
+        lines[0], [r"$\mathfrak{Re}\, u_n(s) $", r"$\mathfrak{Im}\, u_n(s)$"], loc=3
     )
     plt.legend([l[0] for l in lines], [l[0].get_label() for l in lines], loc=1)
     plt.gca().add_artist(legend1)
 
-    plt.xlabel(r"$r$ [fm]")
-    plt.ylabel(r"$u (r) $ [a.u.]")
+    plt.xlabel(r"$s_n = k_n r$")
+    plt.ylabel(r"$u (s) $ [a.u.]")
+    plt.tight_layout()
+    plt.show()
+
+    lines = []
+    for i in range(system.num_channels):
+        u_values = matrix[i,i].k * uint[i].uint(units="s")(s_values)/s_values
+        (p1,) = plt.plot(s_values, np.real(u_values)**2 + np.imag(u_values)**2, label=r"$n=%d$" % i)
+        lines.append([p1, p2])
+
+    plt.legend([l[0] for l in lines], [l[0].get_label() for l in lines], loc=1)
+
+    plt.xlabel(r"$s_n = k_n r$")
+    plt.ylabel(r"$|R (s)|^2 $ [a.u.]")
+    plt.yscale("log")
     plt.tight_layout()
     plt.show()
 
@@ -840,8 +858,9 @@ def local_interaction_example():
         # coulomb_interaction=lambda zz, r: np.vectorize(coulomb_potential)(zz, r, R0)
     )
 
-    s_values = np.linspace(0.01, 40,200)
+    s_values = np.linspace(0.01, sys.channel_radius,200)
     r_values = s_values / se.k
+
 
     # Runge-Kutta
     sol_rk = solve_ivp(

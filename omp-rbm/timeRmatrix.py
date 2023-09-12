@@ -1,4 +1,13 @@
-from rmatrix_bloch_se import *
+  
+from lagrange_rmatrix import (
+    ProjectileTargetSystem,       # defines channel-independent data for the system
+    RadialSEChannel,              # channel description
+    LagrangeRMatrix,              # solver
+    woods_saxon_potential,        # short-range nuclear interaction
+    surface_peaked_gaussian_potential, 
+  )
+
+import numpy as np
 import time
 import plotly, plotly.subplots
 
